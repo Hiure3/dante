@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web DVS – Virtual Soundcard (protótipo)</title>
+<style>
+:root{--bg:#161b20;--pn:#1e252b;--sf:#262f36;--ln:#36424c;--tx:#d8dee3;--mu:#8796a1;--ok:#3fd0b8;--am:#f0b429;--rd:#e5484d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px 'Segoe UI',system-ui,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--pn);border-bottom:1px solid var(--ln)}
+h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.2px}
+h2{font-size:13px;margin:0 0 10px;color:var(--mu);font-weight:600}
+main{display:grid;grid-template-columns:300px 1fr;gap:14px;padding:14px;max-width:1500px;margin:auto}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--pn);border:1px solid var(--ln);border-radius:6px;padding:14px}
+.col{display:flex;flex-direction:column;gap:14px}
+label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0;color:var(--mu)}
+select,input[type=number],input[type=text],button{background:var(--sf);color:var(--tx);border:1px solid var(--ln);border-radius:4px;padding:5px 8px;font:inherit}
+input[type=range]{width:130px;accent-color:var(--ok)}
+label select{max-width:165px}
+button{cursor:pointer}button:hover{border-color:var(--ok)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--ok);outline-offset:1px}
+#pw{background:var(--ok);color:#06231e;border:0;font-weight:700;padding:7px 18px}
+#pw.on{background:var(--rd);color:#fff}
+.led{width:10px;height:10px;border-radius:50%;background:var(--ln)}.led.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--sf);border-radius:4px;padding:8px}
+.stat b{display:block;font:600 18px Consolas,monospace}.stat span{color:var(--mu);font-size:12px}
+.bad{color:var(--rd)}
+canvas{width:100%;height:120px;background:#12171b;border-radius:4px;display:block}
+#mxwrap{overflow:auto;max-height:640px}
+#mx{display:grid;gap:2px;width:max-content;min-width:100%;font:11px Consolas,monospace}
+#mx>b,#mx>i{display:flex;align-items:center;justify-content:center;color:var(--mu);font-style:normal;font-weight:400;min-height:22px}
+#mx>b{cursor:pointer;border-radius:3px}#mx>b:hover{color:var(--tx)}#mx>b.mute{color:var(--rd);text-decoration:line-through}
+#mx>button{padding:0;min-width:22px;height:22px;border-radius:3px;background:var(--sf);border-color:transparent}
+#mx>button:hover{border-color:var(--mu)}#mx>button.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+small{color:var(--mu)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Web DVS · Virtual Soundcard</h1><div class="led" id="led"></div><small id="st">parado</small>
+  <span style="flex:1"></span><button id="pw">Iniciar áudio</button>
+</header>
+<main>
+<div class="col">
+  <section><h2>Dispositivo virtual</h2>
+    <label>Sample rate<select id="sr"><option>44100</option><option selected>48000</option></select></label>
+    <label>Buffer (frames)<select id="buf"><option>64</option><option>128</option><option selected>256</option><option>512</option><option>1024</option></select></label>
+    <label>Canais (TX × RX)<select id="nch"><option>8</option><option selected>16</option><option>32</option></select></label>
+    <label>Saída master<input type="range" id="mg" min="0" max="1" step=".01" value=".25"></label>
+    <div class="row"><button id="dv">Detectar dispositivos</button></div>
+    <label>Entrada (→ TX)<select id="din"><option value="">Padrão</option></select></label>
+    <small id="dmi"></small>
+    <label>Saída (RX →)<select id="dout"><option value="">Padrão</option></select></label>
+    <label>Saída multicanal (todos os RX)<input type="checkbox" id="mch"></label>
+    <label>Monitor L (RX)<select id="ml"></select></label>
+    <label>Monitor R (RX)<select id="mr"></select></label>
+  </section>
+  <section><h2>Gerador de sinal (entradas TX)</h2>
+    <label>Tipo<select id="gm"><option value="sine">Senoide</option><option value="noise">Ruído branco</option><option value="mic">Entrada de dispositivo (TX 1–N)</option><option value="off">Silêncio</option></select></label>
+    <label>Freq. base (Hz)<input type="number" id="gf" value="220" min="20" max="8000" style="width:80px"></label>
+    <small>Cada canal sobe um semitom (canal 1 = base). Clique no número do canal na matriz para silenciá-lo.</small>
+  </section>
+  <section><h2>Rede</h2>
+    <label>Modo<select id="nm"><option value="sim">Simulada (local)</option><option value="ws">WebSocket (servidor)</option><option value="rtc">WebRTC DataChannel (UDP-like)</option></select></label>
+    <label>Jitter buffer <span id="vb">20 ms</span></label><input type="range" id="nb" min="5" max="100" value="20">
+    <label>Servidor<input type="text" id="wu" value="ws://localhost:8080/?echo=1" style="width:170px"></label>
+    <div class="row"><button id="wc">Conectar</button><small id="wst">desconectado</small></div>
+    <div class="row"><button id="rc">Chamar par WebRTC</button><small id="rst">sem par</small></div>
+    <small>Com echo=1 o servidor devolve seus próprios pacotes (teste com uma aba). Sem echo, só outros clientes recebem.</small>
+  </section>
+  <section><h2>Simulação local</h2>
+    <label>Atraso <span id="vd">5 ms</span></label><input type="range" id="nd" min="0" max="50" value="5">
+    <label>Jitter <span id="vj">2 ms</span></label><input type="range" id="nj" min="0" max="40" value="2">
+    <label>Perda de pacotes <span id="vl">0 %</span></label><input type="range" id="nl" min="0" max="30" step=".5" value="0">
+  </section>
+  <section><h2>Monitor de rede</h2>
+    <div class="stats">
+      <div class="stat"><b id="sl">–</b><span>Latência total (ms)</span></div>
+      <div class="stat"><b id="sp">–</b><span>Perda (%)</span></div>
+      <div class="stat"><b id="ss">0</b><span>Pacotes enviados</span></div>
+      <div class="stat"><b id="sr2">–</b><span>RTT WebSocket (ms)</span></div>
+      <div class="stat"><b id="spr">–</b><span>Par remoto (id)</span></div>
+      <div class="stat"><b id="su">0</b><span>Underruns</span></div>
+    </div>
+  </section>
+</div>
+<div class="col">
+  <section><h2>Patchbay – linhas: saídas RX · colunas: entradas TX</h2>
+    <div class="row"><button id="p1">Rotear 1:1</button><button id="pc">Limpar tudo</button><button id="ps">Salvar preset</button><button id="pl">Carregar preset</button><button id="pr">Inverter ordem</button></div>
+    <div id="mxwrap"><div id="mx"></div></div>
+  </section>
+  <section><h2>Medidores TX (antes da rede)</h2><canvas id="mtx"></canvas></section>
+  <section><h2>Medidores RX (após matriz e rede)</h2><canvas id="mrx"></canvas></section>
+</div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+/* ---------- AudioWorklet: gerador TX + pacotes simulados + matriz RX ---------- */
+const WORKLET=`
+class DVS extends AudioWorkletProcessor{
+ constructor(o){super();this.N=o.processorOptions.N;const N=this.N;
+  this.ph=new Float64Array(N);this.mode=Array(N).fill('sine');this.freq=new Float64Array(N).fill(220);
+  this.M=new Float32Array(N*N);this.net={d:5,j:2,l:0,ws:0,jb:20};this.q=[];this.k=0;this.nd=-1e9;
+  this.s={sent:0,lost:0,under:0,late:0,ms:0,n:0};this.tp=new Float32Array(N);this.rp=new Float32Array(N);
+  this.port.onmessage=e=>{const m=e.data;if(m.t=='m')this.M=m.M;if(m.t=='g'){this.mode=m.mode;this.freq=m.freq}if(m.t=='n')this.net=m.net;if(m.t=='p'){const jq=Math.max(1,Math.round(this.net.jb/(128/sampleRate*1000)));if(this.nd<this.k-2||this.nd>this.k+jq+8)this.nd=this.k+jq;this.q.push({due:this.nd++,pk:m.pk,ms:this.net.jb})}}}
+ process(ins,outs){
+  const out=outs[0],B=out[0].length,N=this.N,pk=new Float32Array(N*B),qd=B/sampleRate*1000;
+  for(let i=0;i<N;i++){const md=this.mode[i],inc=this.freq[i]/sampleRate;let p=this.ph[i];
+   for(let s=0;s<B;s++){let v=0;if(md=='sine'){v=Math.sin(6.2831853*p)*.5;p+=inc;if(p>=1)p-=1}
+    else if(md=='noise')v=(Math.random()*2-1)*.5;else if(md=='mic')v=(ins[0]&&ins[0][i])?ins[0][i][s]:0;
+    pk[i*B+s]=v;const a=v<0?-v:v;if(a>this.tp[i])this.tp[i]=a}
+   this.ph[i]=p}
+  const n=this.net;this.s.sent++;
+  if(n.ws)this.port.postMessage({pkt:pk},[pk.buffer]);else if(Math.random()*100<n.l)this.s.lost++;
+  else{const ms=n.d+Math.random()*n.j;this.q.push({due:this.k+Math.round(ms/qd),pk,ms})}
+  let bi=-1;for(let x=0;x<this.q.length;x++){const d=this.q[x].due;if(d<this.k-3){this.q.splice(x--,1);this.s.late++}
+   else if(d<=this.k&&(bi<0||d<this.q[bi].due))bi=x}
+  if(bi>=0){const p=this.q.splice(bi,1)[0];this.s.ms+=p.ms;this.s.n++;
+   for(let o=0;o<N;o++){const ch=out[o];for(let i=0;i<N;i++){const g=this.M[o*N+i];if(!g)continue;const b=i*B;
+    for(let s=0;s<B;s++)ch[s]+=p.pk[b+s]*g}
+    for(let s=0;s<B;s++){const a=Math.abs(ch[s]);if(a>this.rp[o])this.rp[o]=a}}}
+  else this.s.under++;
+  if(++this.k%8==0){this.port.postMessage({tx:this.tp,rx:this.rp,s:this.s});this.tp=new Float32Array(N);this.rp=new Float32Array(N)}
+  return true}}
+registerProcessor('dvs',DVS);`;
+
+/* ---------- Estado ---------- */
+let ctx=null,node=null,split=null,merger=null,master=null,mg=null;
+let N=16,M=new Float32Array(N*N),txOn=Array(N).fill(true);
+let cur={tx:new Float32Array(N),rx:new Float32Array(N)},disp={tx:new Float32Array(N),rx:new Float32Array(N)},hold={tx:new Float32Array(N),rx:new Float32Array(N)};
+let lastS=null;
+
+/* ---------- UI: matriz ---------- */
+function buildMatrix(){
+  const g=$('#mx');g.style.gridTemplateColumns=`34px repeat(${N},minmax(22px,1fr))`;
+  let h='<i></i>';for(let i=0;i<N;i++)h+=`<b data-t="${i}" title="TX ${i+1} – clique para silenciar">${i+1}</b>`;
+  for(let o=0;o<N;o++){h+=`<i title="RX ${o+1}">${o+1}</i>`;for(let i=0;i<N;i++)h+=`<button data-o="${o}" data-i="${i}" aria-label="TX ${i+1} para RX ${o+1}"></button>`}
+  g.innerHTML=h;paintMatrix();
+  const opts=Array.from({length:N},(_,i)=>`<option value="${i}">RX ${i+1}</option>`).join('');
+  $('#ml').innerHTML=opts;$('#mr').innerHTML=opts;$('#ml').value=0;$('#mr').value=Math.min(1,N-1);
+}
+function paintMatrix(){
+  document.querySelectorAll('#mx>button').forEach(b=>b.classList.toggle('on',!!M[b.dataset.o*N+ +b.dataset.i]));
+  document.querySelectorAll('#mx>b').forEach(b=>b.classList.toggle('mute',!txOn[b.dataset.t]));
+}
+$('#mx').addEventListener('click',e=>{
+  const b=e.target;
+  if(b.dataset.o!==undefined){const k=b.dataset.o*N+ +b.dataset.i;M[k]=M[k]?0:1;paintMatrix();pushMatrix()}
+  else if(b.dataset.t!==undefined){const t=+b.dataset.t;txOn[t]=!txOn[t];paintMatrix();pushGen()}
+});
+const setM=f=>{M=new Float32Array(N*N);f&&f();paintMatrix();pushMatrix()};
+$('#p1').onclick=()=>setM(()=>{for(let i=0;i<N;i++)M[i*N+i]=1});
+$('#pr').onclick=()=>setM(()=>{for(let i=0;i<N;i++)M[(N-1-i)*N+i]=1});
+$('#pc').onclick=()=>setM();
+
+/* ---------- Mensagens para o worklet ---------- */
+const post=m=>node&&node.port.postMessage(m);
+const pushMatrix=()=>post({t:'m',M:M.slice()});
+function pushGen(){const base=+$('#gf').value||220,gm=$('#gm').value;
+  post({t:'g',mode:txOn.map(on=>on?gm:'off'),freq:Float64Array.from({length:N},(_,i)=>Math.min(base*2**(i/12),20000))})}
+function pushNet(){const d=+$('#nd').value,j=+$('#nj').value,l=+$('#nl').value;
+  $('#vd').textContent=d+' ms';$('#vj').textContent=j+' ms';$('#vl').textContent=l+' %';$('#vb').textContent=$('#nb').value+' ms';post({t:'n',net:{d,j,l,ws:+($('#nm').value!='sim'),jb:+$('#nb').value}})}
+['gm','gf'].forEach(i=>$('#'+i).oninput=pushGen);['nd','nj','nl','nb','nm'].forEach(i=>$('#'+i).oninput=pushNet);
+
+/* ---------- Áudio ---------- */
+function routeMonitor(){if(!split)return;split.disconnect();
+  split.connect(merger,+$('#ml').value,0);split.connect(merger,+$('#mr').value,1)}
+$('#ml').onchange=$('#mr').onchange=routeMonitor;
+$('#mg').oninput=e=>{if(master)master.gain.value=+e.target.value;if(mg)mg.gain.value=+e.target.value};
+function outMode(){if(!node)return;node.disconnect();master.disconnect();mg.disconnect();const d=ctx.destination;
+  if($('#mch').checked){d.channelCount=Math.min(N,d.maxChannelCount||2);d.channelInterpretation='discrete';node.connect(mg);mg.connect(d)}
+  else{d.channelCount=2;d.channelInterpretation='speakers';node.connect(split);routeMonitor();merger.connect(master);master.connect(d)}}
+
+async function start(){
+  const sr=+$('#sr').value,buf=+$('#buf').value;
+  ctx=new AudioContext({sampleRate:sr,latencyHint:buf/sr});
+  if($('#dout').value&&ctx.setSinkId)await ctx.setSinkId($('#dout').value);
+  const url=URL.createObjectURL(new Blob([WORKLET],{type:'application/javascript'}));
+  await ctx.audioWorklet.addModule(url);
+  node=new AudioWorkletNode(ctx,'dvs',{numberOfInputs:1,numberOfOutputs:1,channelCount:N,channelCountMode:'explicit',channelInterpretation:'discrete',outputChannelCount:[N],processorOptions:{N}});
+  split=ctx.createChannelSplitter(N);merger=ctx.createChannelMerger(2);master=ctx.createGain();master.gain.value=+$('#mg').value;
+  mg=ctx.createGain();mg.gain.value=+$('#mg').value;mg.channelCount=N;mg.channelCountMode='explicit';mg.channelInterpretation='discrete';outMode();
+  node.port.onmessage=e=>{if(e.data.pkt){sendPkt(e.data.pkt);return}cur.tx=e.data.tx;cur.rx=e.data.rx;lastS=e.data.s};
+  pushMatrix();pushGen();pushNet();if($('#gm').value=='mic')ensureMic();
+  await ctx.resume();setUI(true);
+}
+async function stop(){if(micStream)micStream.getTracks().forEach(t=>t.stop());micStream=micSrc=null;if(ctx){await ctx.close()}ctx=node=split=merger=master=mg=null;lastS=null;setUI(false)}
+function setUI(on){$('#pw').textContent=on?'Parar áudio':'Iniciar áudio';$('#pw').classList.toggle('on',on);$('#led').classList.toggle('on',on);
+  $('#st').textContent=on?`ativo · ${ctx.sampleRate} Hz · ${N}×${N} · saída máx. ${ctx.destination.maxChannelCount} ch`:'parado'}
+$('#pw').onclick=()=>ctx?stop():start();
+async function reconfig(){const was=!!ctx;if(was)await stop();
+  if(+$('#nch').value!==N){N=+$('#nch').value;M=new Float32Array(N*N);txOn=Array(N).fill(true);
+    for(const k of['cur','disp','hold'])for(const s of['tx','rx'])(k=='cur'?cur:k=='disp'?disp:hold)[s]=new Float32Array(N);buildMatrix()}
+  if(was)start()}
+['sr','buf','nch'].forEach(i=>$('#'+i).onchange=reconfig);
+
+/* ---------- Medidores e estatísticas ---------- */
+function draw(cv,d,hd){
+  const r=devicePixelRatio||1,w=cv.clientWidth*r,h=cv.clientHeight*r;if(cv.width!=w)cv.width=w;if(cv.height!=h)cv.height=h;
+  const c=cv.getContext('2d');c.clearRect(0,0,w,h);const bw=w/N,lh=14*r,mh=h-lh;
+  c.font=`${9*r}px Consolas,monospace`;c.textAlign='center';
+  for(let i=0;i<N;i++){
+    const lv=Math.max(0,Math.min(1,(20*Math.log10(d[i]||1e-6)+60)/60)),x=i*bw+bw*.15,ww=bw*.7,y=mh*(1-lv);
+    c.fillStyle='#202a31';c.fillRect(x,0,ww,mh);
+    const gr=c.createLinearGradient(0,mh,0,0);gr.addColorStop(0,'#3fd0b8');gr.addColorStop(.7,'#3fd0b8');gr.addColorStop(.85,'#f0b429');gr.addColorStop(1,'#e5484d');
+    c.fillStyle=gr;c.fillRect(x,y,ww,mh-y);
+    const hl=Math.max(0,Math.min(1,(20*Math.log10(hd[i]||1e-6)+60)/60));c.fillStyle='#d8dee3';c.fillRect(x,mh*(1-hl),ww,Math.max(1,r));
+    c.fillStyle='#8796a1';c.fillText(i+1,i*bw+bw/2,h-3*r)}
+}
+function frame(){
+  for(const s of['tx','rx']){for(let i=0;i<N;i++){disp[s][i]=Math.max(cur[s][i],disp[s][i]*.9);hold[s][i]=Math.max(disp[s][i],hold[s][i]*.995)}}
+  draw($('#mtx'),disp.tx,hold.tx);draw($('#mrx'),disp.rx,hold.rx);requestAnimationFrame(frame)}
+setInterval(()=>{if(!ctx||!lastS)return;const s=lastS;
+  const buf=+$('#buf').value,pk=buf/ctx.sampleRate*1000,dev=((ctx.baseLatency||0)+(ctx.outputLatency||0))*1000;
+  const net=s.n?s.ms/s.n:0;$('#sl').textContent=(net+pk+dev).toFixed(1);
+  const isWs=$('#nm').value!='sim';const loss=isWs?(rxLost+rxN?rxLost/(rxLost+rxN)*100:0):(s.sent?(s.lost+s.late)/s.sent*100:0);
+  $('#sr2').textContent=rtt==null?'–':rtt.toFixed(1);$('#spr').textContent=peer===null?'–':'#'+peer;const p=$('#sp');p.textContent=loss.toFixed(2);p.className=loss>1?'bad':'';
+  $('#ss').textContent=s.sent;const u=$('#su');u.textContent=s.under;u.className=s.under>5?'bad':''},250);
+
+/* ---------- Microfone e rede real (WebSocket) ---------- */
+let micSrc=null,micStream=null,ws=null,seq=0,peer=null,lastSeq=-1,rxLost=0,rxN=0,rtt=null;
+async function ensureMic(){if(!ctx||micSrc)return;
+  try{micStream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:$('#din').value?{exact:$('#din').value}:undefined,echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:{ideal:N}}});
+    $('#dmi').textContent='entrada: '+(micStream.getAudioTracks()[0].getSettings().channelCount||'?')+' canal(is) capturado(s)';
+    micSrc=ctx.createMediaStreamSource(micStream);micSrc.connect(node)}
+  catch(e){alert('Microfone indisponível: '+e.message)}}
+$('#gm').addEventListener('input',()=>{if($('#gm').value=='mic')ensureMic()});
+function sendPkt(f){const c=$('#nm').value=='rtc'?dc:ws;
+  if(!c||(c.readyState!=1&&c.readyState!='open')||c.bufferedAmount>2e5)return;
+  const b=new ArrayBuffer(4+f.length*2),o=new Int16Array(b,4,f.length);new DataView(b).setUint32(0,seq++);
+  for(let k=0;k<f.length;k++){const x=f[k];o[k]=(x>1?1:x<-1?-1:x)*32767}c.send(b)}
+function onPkt(id,ab){
+  if(!node)return;const sq=new DataView(ab).getUint32(0);
+  if(peer===null)peer=id;if(id!==peer)return;
+  if(lastSeq>=0){if(sq<=lastSeq)return;rxLost+=sq-lastSeq-1}lastSeq=sq;rxN++;
+  const i16=new Int16Array(ab.slice(4));if(i16.length!==N*128)return;
+  const f=new Float32Array(i16.length);for(let k=0;k<f.length;k++)f[k]=i16[k]/32768;
+  node.port.postMessage({t:'p',pk:f},[f.buffer])}
+/* WebRTC: sinalização pelo WebSocket, áudio por DataChannel não ordenado e sem retransmissão */
+let pc=null,dc=null,sigQ=Promise.resolve();
+const sig=d=>{if(ws&&ws.readyState==1)ws.send(JSON.stringify({t:'sig',d}))};
+function rtcClose(){if(dc)dc.close();if(pc)pc.close();pc=dc=null;$('#rst').textContent='sem par'}
+function rtcSetup(){pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  pc.onicecandidate=e=>e.candidate&&sig({c:e.candidate});
+  pc.ondatachannel=e=>bindDc(e.channel);
+  pc.onconnectionstatechange=()=>{if(!pc)return;$('#rst').textContent=pc.connectionState;if(pc.connectionState=='failed')rtcClose()}}
+function bindDc(c){dc=c;c.binaryType='arraybuffer';
+  c.onopen=()=>{peer=null;lastSeq=-1;rxLost=rxN=0;seq=0;$('#rst').textContent='canal aberto'};
+  c.onmessage=e=>{if(typeof e.data=='string'){if(e.data[0]=='p')c.send('q'+e.data.slice(1));else rtt=performance.now()-+e.data.slice(1);return}
+    if($('#nm').value=='rtc')onPkt(0,e.data)}}
+async function rtcCall(){if(!ws||ws.readyState!=1){alert('Conecte ao servidor (sinalização) primeiro.');return}
+  rtcClose();rtcSetup();bindDc(pc.createDataChannel('pcm',{ordered:false,maxRetransmits:0}));
+  await pc.setLocalDescription(await pc.createOffer());sig({o:pc.localDescription});$('#rst').textContent='chamando…'}
+async function onSig(d){
+  if(d.o){rtcClose();rtcSetup();await pc.setRemoteDescription(d.o);await pc.setLocalDescription(await pc.createAnswer());sig({a:pc.localDescription})}
+  else if(d.a&&pc)await pc.setRemoteDescription(d.a);
+  else if(d.c&&pc)try{await pc.addIceCandidate(d.c)}catch{}}
+$('#rc').onclick=rtcCall;
+$('#ps').onclick=()=>{try{localStorage.setItem('dvs'+N,JSON.stringify({M:[...M],txOn}))}catch{}};
+$('#pl').onclick=()=>{try{const d=JSON.parse(localStorage.getItem('dvs'+N));if(d){M=Float32Array.from(d.M);txOn=d.txOn;paintMatrix();pushMatrix();pushGen()}}catch{}};
+function wsToggle(){
+  if(ws){ws.close();return}
+  ws=new WebSocket($('#wu').value);ws.binaryType='arraybuffer';peer=null;lastSeq=-1;rxLost=rxN=0;seq=0;
+  ws.onopen=()=>{$('#wst').textContent='conectado';$('#wc').textContent='Desconectar'};
+  ws.onclose=()=>{rtcClose();$('#wst').textContent='desconectado';$('#wc').textContent='Conectar';ws=null;rtt=null};
+  ws.onmessage=e=>{
+    if(typeof e.data=='string'){try{const m=JSON.parse(e.data);
+      if(m.t=='pong'&&$('#nm').value!='rtc')rtt=performance.now()-m.ts;
+      if(m.t=='sig')sigQ=sigQ.then(()=>onSig(m.d)).catch(()=>{})}catch{}return}
+    if($('#nm').value=='ws')onPkt(new DataView(e.data).getUint8(0),e.data.slice(1))}}
+$('#wc').onclick=wsToggle;
+setInterval(()=>{if($('#nm').value=='rtc'){if(dc&&dc.readyState=='open')dc.send('p'+performance.now())}
+  else if(ws&&ws.readyState==1)ws.send(JSON.stringify({t:'ping',ts:performance.now()}))},1000);
+
+/* ---------- Dispositivos de áudio (REAPER via cabo virtual) ---------- */
+async function listDevices(){
+  try{(await navigator.mediaDevices.getUserMedia({audio:true})).getTracks().forEach(x=>x.stop())}
+  catch(e){alert('Permita o acesso ao áudio para listar os dispositivos.');return}
+  const ds=await navigator.mediaDevices.enumerateDevices();
+  const fill=(id,kind)=>{const sel=$(id),keep=sel.value;
+    sel.innerHTML='<option value="">Padrão</option>'+ds.filter(d=>d.kind==kind).map(d=>`<option value="${d.deviceId}">${d.label||d.deviceId.slice(0,8)}</option>`).join('');sel.value=keep};
+  fill('#din','audioinput');fill('#dout','audiooutput')}
+$('#dv').onclick=listDevices;
+$('#din').onchange=()=>{if(micStream)micStream.getTracks().forEach(t=>t.stop());if(micSrc)micSrc.disconnect();micSrc=micStream=null;if(ctx&&$('#gm').value=='mic')ensureMic()};
+$('#dout').onchange=async()=>{if(!ctx)return;if(!ctx.setSinkId){alert('Este navegador não permite escolher a saída. Use Chrome ou Edge atualizado.');return}
+  await ctx.setSinkId($('#dout').value||'');outMode();setUI(true)};
+$('#mch').onchange=()=>{outMode()};
+
+buildMatrix();requestAnimationFrame(frame);
+</script>
+</body>
+</html>
